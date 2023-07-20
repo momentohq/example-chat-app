@@ -101,7 +101,24 @@ export default function Home() {
 
       setTopicClient(client);
     }
-  }, [topicClient, credentials, getRoomList]);
+  }, [topicClient, credentials]);
+
+	const getAuthToken = useCallback(async () => {
+		const storedCredentials = sessionStorage.getItem('credentials');
+		if (storedCredentials) {
+			const creds = JSON.parse(storedCredentials);
+			if (!creds.exp || creds.exp < Date.now()) {
+				sessionStorage.removeItem('credentials');
+			} else {
+				return creds.token;
+			}
+		}
+
+		const response = await fetch(`${process.env.NEXT_PUBLIC_API}/tokens`);
+		const data = await response.json();
+		sessionStorage.setItem('credentials', JSON.stringify(data));
+		return data.token;
+	}, []);
 
   useEffect(() => {
     if (topicClient) {
