@@ -1,4 +1,5 @@
-import React, { useEffect, useState, useRef } from 'react';
+// @ts-check
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import { FaArrowLeft } from 'react-icons/fa';
 import Head from 'next/head';
@@ -13,39 +14,15 @@ const Chat = () => {
   const [credentials, setCredentials] = useState(null);
   const [topicClient, setTopicClient] = useState(null);
   const [cacheClient, setCacheClient] = useState(null);
-  const topicClientRef = useRef(topicClient);
-  const cacheClientRef = useRef(cacheClient);
-  const messagesRef = useRef(messages);
   const chatWindowRef = useRef(null);
-
-  const updateTopicClient = (client) => {
-    topicClientRef.current = client;
-    setTopicClient(client);
-  };
-
-  const updateCacheClient = (client) => {
-    cacheClientRef.current = client;
-    setCacheClient(client);
-  };
-
-  const updateMessages = (newMessages) => {
-    messagesRef.current = newMessages;
-    setMessages(newMessages);
+ 
+  useEffect(() => {
     console.log('test', messages);
-  };
+  }, [messages])
 
   useEffect(() => {
-    topicClientRef.current = topicClient;
-  }, [topicClient]);
-
-  useEffect(() => {
-    cacheClientRef.current = cacheClient;
-  }, [cacheClient]);
-
-  useEffect(() => {
-    messagesRef.current = messages;
     if (chatWindowRef.current) {
-      chatWindowRef.current.scrollIntoView({ behavior: 'smooth' });
+      chatWindowRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages]);
 
@@ -64,13 +41,44 @@ const Chat = () => {
     }
   }, []);
 
-  useEffect(() => {
-    async function setupMomento() {
-      initializeTopicClient();
-      initializeCacheClient();
-      loadChatHistory();
-    }
+  const initializeCacheClient = useCallback(() => {
+    if (!cacheClient) {
+      const client = new CacheClient({
+        configuration: Configurations.Browser.v1(),
+        credentialProvider: CredentialProvider.fromString({ authToken: credentials?.user?.claims.momento.token }),
+        defaultTtlSeconds: 3600
+      });
 
+      setCacheClient(client);
+    }
+  }, [credentials, cacheClient]);
+
+  const initializeTopicClient = useCallback(() => {
+    if (!topicClient && router.query.room) {
+      const client = new TopicClient({
+        configuration: Configurations.Browser.v1(),
+        credentialProvider: CredentialProvider.fromString({ authToken: credentials?.user?.claims.momento.token })
+      });
+
+      setTopicClient(client);
+    }
+  }, [credentials, router, topicClient]);
+
+  const loadChatHistory = useCallback(async () => {
+    const chatHistoryResponse = await cacheClient?.listFetch('chat', router.query.room);
+    if (chatHistoryResponse instanceof CacheListFetch.Hit) {
+      const history = chatHistoryResponse.valueListString().map(msg => JSON.parse(msg));
+      setMessages(history);
+    }
+  }, [cacheClient, router]);
+
+  const setupMomento = useCallback(async () => {
+    initializeTopicClient();
+    initializeCacheClient();
+    await loadChatHistory();
+  }, [initializeCacheClient, initializeTopicClient, loadChatHistory]) 
+
+  useEffect(() => {
     if (credentials && !topicClient) {
       setupMomento();
     }
@@ -78,58 +86,40 @@ const Chat = () => {
     if (credentials?.user?.username) {
       setName(credentials?.user?.username);
     }
-  }, [credentials, router]);
+  }, [credentials]);
 
-  const initializeCacheClient = () => {
-    if (!cacheClient) {
-      cacheClient = new CacheClient({
-        configuration: Configurations.Browser.v1(),
-        credentialProvider: CredentialProvider.fromString({ authToken: credentials.user.claims.momento.token }),
-        defaultTtlSeconds: 3600
-      });
+  const saveMessage = useCallback(async (newMessage) => {
+    console.log(newMessage);
+    const detail = JSON.parse(newMessage);
+    setMessages((prev) => [detail, ...prev]);
+  }, []);
 
-      updateCacheClient(cacheClient);
-    }
-  };
-
-  const initializeTopicClient = async () => {
-    if (!topicClient && router.query.room) {
-      topicClient = new TopicClient({
-        configuration: Configurations.Browser.v1(),
-        credentialProvider: CredentialProvider.fromString({ authToken: credentials.user.claims.momento.token })
-      });
-
-      updateTopicClient(topicClient);
-      await topicClient.subscribe('chat', `${router.query.room}-chat`, {
+  useEffect(() => {
+    if (topicClient) {
+      topicClient.subscribe('chat', `${router.query.room}-chat`, {
         onItem: async (data) => await saveMessage(data.value()),
         onError: (err) => console.log(err)
       });
     }
-  };
+  }, [topicClient, router, saveMessage])
 
-  const loadChatHistory = async () => {
-    const chatHistoryResponse = await cacheClient.listFetch('chat', router.query.room);
-    if (chatHistoryResponse instanceof CacheListFetch.Hit) {
-      const history = chatHistoryResponse.valueListString().map(msg => JSON.parse(msg));
-      updateMessages(history);
-    }
-  };
-
-  const saveMessage = async (newMessage) => {
-    console.log(newMessage);
-    const detail = JSON.parse(newMessage);
-    updateMessages([detail, ...messagesRef.current]);
-  };
-
-  const sendMessage = async (event) => {
+  const sendMessage = useCallback(async (event) => {
     event.preventDefault();
-    const msg = JSON.stringify({ username: name, message: message });
-    topicClient.publish('chat', `${router.query.room}-chat`, msg);
+    const msg = JSON.stringify({ username: name, message });
+    topicClient?.publish('chat', `${router.query.room}-chat`, msg);
     setMessage("");
-    cacheClient.listPushFront('chat', router.query.room, msg);
-  };
+    cacheClient?.listPushFront('chat', router.query.room, msg);
+  }, [message, name, topicClient, cacheClient, router]);
 
+  const handleOnChange = useCallback((event) => {
+    setMessage(event.target.value);
+  }, [])
 
+  const handleOnKeyPress = useCallback((event) => {
+    if (event.key === 'Enter') {
+      sendMessage(event);
+    };
+  }, [sendMessage]);
 
   return (
     <div>
@@ -158,10 +148,10 @@ const Chat = () => {
             className={styles['text-input']}
             placeholder="Type your message here"
             value={message}
-            onChange={event => setMessage(event.target.value)}
-            onKeyPress={event => event.key === 'Enter' ? sendMessage(event) : null}
+            onChange={handleOnChange}
+            onKeyPress={handleOnKeyPress}
           />
-          <button className={styles.btn} onClick={e => sendMessage(e)}>Send</button>
+          <button className={styles.btn} onClick={sendMessage}>Send</button>
         </div>
       </div>
     </div>
